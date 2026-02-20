@@ -1,39 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import { useParams, useNavigate } from "react-router-dom";
+import { MeetingHeader, VideoGrid, ControlBar } from "../components/meeting";
 
-const socket = io(import.meta.env.VITE_API_URL);
-
-const VideoPlayer = ({ stream, muted = false, label = "User" }) => {
-  const videoRef = useRef(null);
-
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  return (
-    <div className="relative w-full h-full">
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted={muted}
-        className="w-full h-full object-cover scale-x-[-1] rounded-lg bg-[#202124]"
-      />
-      <div className="absolute bottom-2 left-2 text-white bg-black/50 px-3 py-1 rounded text-xs">
-        {label}
-      </div>
-    </div>
-  );
-};
+const socket = io(import.meta.env.VITE_API_URL, {
+  withCredentials: true,
+});
 
 export default function Meeting() {
   const { streamId: roomId } = useParams();
   const navigate = useNavigate();
 
   const [localStream, setLocalStream] = useState(null);
+  const [localUsername, setLocalUsername] = useState("You");
   const [peers, setPeers] = useState([]);
   const [copied, setCopied] = useState(false);
 
@@ -41,83 +20,28 @@ export default function Meeting() {
   const [isCamOn, setIsCamOn] = useState(true);
 
   const peersRef = useRef({});
+  const peerUsernamesRef = useRef({});
   const localStreamRef = useRef(null);
   const hasJoinedRef = useRef(false);
+  const localUsernameRef = useRef("You");
 
-  useEffect(() => {
-    const startCall = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
-        setLocalStream(stream);
-        localStreamRef.current = stream;
+  // ── Helper functions (declared before useEffect) ──
 
-        if (!hasJoinedRef.current) {
-          socket.emit("join-room", roomId);
-          hasJoinedRef.current = true;
-        }
-      } catch (err) {
-        alert("Could not access camera/microphone. Please allow permissions.");
-      }
-    };
+  const createPeerConnection = useCallback((targetSocketId, username) => {
+    // Close any existing peer connection for this user (handles glare / reconnect)
+    if (peersRef.current[targetSocketId]) {
+      peersRef.current[targetSocketId].close();
+      delete peersRef.current[targetSocketId];
+    }
 
-    startCall();
-
-    socket.on("user-connected", (userSocketId) => {
-      connectToNewUser(userSocketId, localStreamRef.current);
-    });
-
-    socket.on("offer", async (payload) => {
-      await handleReceiveOffer(
-        payload.offer,
-        payload.caller,
-        localStreamRef.current
-      );
-    });
-
-    socket.on("answer", (payload) => {
-      const peer = peersRef.current[payload.caller];
-      if (peer) {
-        peer
-          .setRemoteDescription(new RTCSessionDescription(payload.answer))
-          .catch((e) => console.error(e));
-      }
-    });
-
-    socket.on("ice-candidate", (payload) => {
-      const peer = peersRef.current[payload.caller];
-      if (peer && payload.candidate) {
-        peer
-          .addIceCandidate(new RTCIceCandidate(payload.candidate))
-          .catch((e) => console.error(e));
-      }
-    });
-
-    socket.on("user-disconnected", (userSocketId) => {
-      if (peersRef.current[userSocketId]) {
-        peersRef.current[userSocketId].close();
-        delete peersRef.current[userSocketId];
-      }
-      setPeers((prev) =>
-        prev.filter((p) => p.socketId !== userSocketId)
-      );
-    });
-
-    return () => {
-      socket.off("user-connected");
-      socket.off("offer");
-      socket.off("answer");
-      socket.off("ice-candidate");
-      socket.off("user-disconnected");
-    };
-  }, [roomId]);
-
-  function createPeerConnection(targetSocketId) {
     const peer = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
+
+    // Store the username for this peer
+    if (username) {
+      peerUsernamesRef.current[targetSocketId] = username;
+    }
 
     peer.onicecandidate = (e) => {
       if (e.candidate) {
@@ -134,7 +58,11 @@ export default function Meeting() {
         if (!prev.find((p) => p.socketId === targetSocketId)) {
           return [
             ...prev,
-            { socketId: targetSocketId, stream: e.streams[0] },
+            {
+              socketId: targetSocketId,
+              stream: e.streams[0],
+              username: peerUsernamesRef.current[targetSocketId] || "Guest",
+            },
           ];
         }
         return prev;
@@ -143,10 +71,13 @@ export default function Meeting() {
 
     peersRef.current[targetSocketId] = peer;
     return peer;
-  }
+  }, []);
 
-  function connectToNewUser(targetSocketId, stream) {
-    const peer = createPeerConnection(targetSocketId);
+  const connectToNewUser = useCallback((targetSocketId, stream, username) => {
+    // Don't create duplicate connections
+    if (peersRef.current[targetSocketId]) return;
+
+    const peer = createPeerConnection(targetSocketId, username);
 
     if (stream) {
       stream.getTracks().forEach((track) =>
@@ -162,13 +93,14 @@ export default function Meeting() {
           target: targetSocketId,
           caller: socket.id,
           offer: peer.localDescription,
+          username: localUsernameRef.current,
         });
       })
       .catch((e) => console.error(e));
-  }
+  }, [createPeerConnection]);
 
-  async function handleReceiveOffer(offer, callerSocketId, stream) {
-    const peer = createPeerConnection(callerSocketId);
+  const handleReceiveOffer = useCallback(async (offer, callerSocketId, stream, callerUsername) => {
+    const peer = createPeerConnection(callerSocketId, callerUsername);
 
     if (stream) {
       stream.getTracks().forEach((track) =>
@@ -184,8 +116,125 @@ export default function Meeting() {
       target: callerSocketId,
       caller: socket.id,
       answer,
+      username: localUsernameRef.current,
     });
-  }
+  }, [createPeerConnection]);
+
+  // ── Main effect ──
+
+  useEffect(() => {
+    const startCall = async () => {
+      try {
+        // Guard: don't acquire media twice on effect re-run
+        if (!localStreamRef.current) {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          setLocalStream(stream);
+          localStreamRef.current = stream;
+        }
+
+        if (!hasJoinedRef.current) {
+          socket.emit("join-room", roomId, (response) => {
+            if (response?.username) {
+              setLocalUsername(response.username);
+              localUsernameRef.current = response.username;
+            }
+          });
+          hasJoinedRef.current = true;
+        }
+      } catch {
+        alert("Could not access camera/microphone. Please allow permissions.");
+      }
+    };
+
+    startCall();
+
+    // Store username only; the new user will send us an offer via "existing-users"
+    socket.on("user-connected", (userData) => {
+      const { socketId, username } = userData;
+      peerUsernamesRef.current[socketId] = username || "Guest";
+    });
+
+    // Server sends array of { socketId, username }
+    socket.on("existing-users", (users) => {
+      users.forEach((userData) => {
+        const { socketId, username } = userData;
+        peerUsernamesRef.current[socketId] = username || "Guest";
+        connectToNewUser(socketId, localStreamRef.current, username);
+      });
+    });
+
+    socket.on("offer", async (payload) => {
+      // Store the caller's username from the offer payload
+      if (payload.username) {
+        peerUsernamesRef.current[payload.caller] = payload.username;
+      }
+      await handleReceiveOffer(
+        payload.offer,
+        payload.caller,
+        localStreamRef.current,
+        payload.username
+      );
+    });
+
+    socket.on("answer", (payload) => {
+      // Store the answerer's username from the answer payload
+      if (payload.username) {
+        peerUsernamesRef.current[payload.caller] = payload.username;
+        // Update existing peer entry with username
+        setPeers((prev) =>
+          prev.map((p) =>
+            p.socketId === payload.caller
+              ? { ...p, username: payload.username }
+              : p
+          )
+        );
+      }
+      const peer = peersRef.current[payload.caller];
+      if (peer && peer.signalingState === "have-local-offer") {
+        peer
+          .setRemoteDescription(new RTCSessionDescription(payload.answer))
+          .catch((e) => console.error(e));
+      }
+    });
+
+    socket.on("ice-candidate", (payload) => {
+      const peer = peersRef.current[payload.caller];
+      if (peer && payload.candidate) {
+        peer
+          .addIceCandidate(new RTCIceCandidate(payload.candidate))
+          .catch((e) => console.error(e));
+      }
+    });
+
+    // Server now sends { socketId, username }
+    socket.on("user-disconnected", (userData) => {
+      const disconnectedId = typeof userData === "string" ? userData : userData.socketId;
+      if (peersRef.current[disconnectedId]) {
+        peersRef.current[disconnectedId].close();
+        delete peersRef.current[disconnectedId];
+      }
+      delete peerUsernamesRef.current[disconnectedId];
+      setPeers((prev) =>
+        prev.filter((p) => p.socketId !== disconnectedId)
+      );
+    });
+
+    return () => {
+      socket.off("user-connected");
+      socket.off("existing-users");
+      socket.off("offer");
+      socket.off("answer");
+      socket.off("ice-candidate");
+      socket.off("user-disconnected");
+      // Clean up all peer connections
+      Object.values(peersRef.current).forEach((p) => p.close());
+      peersRef.current = {};
+      peerUsernamesRef.current = {};
+    };
+  }, [roomId]);
 
   const toggleMic = () => {
     if (localStreamRef.current) {
@@ -227,78 +276,26 @@ export default function Meeting() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#202124] text-white">
+    <div className="h-screen flex flex-col bg-slate-950 text-white overflow-hidden">
       {/* HEADER */}
-      <div className="px-6 py-4 flex justify-between items-center border-b border-gray-700">
-        <h3 className="text-lg font-semibold">Meeting Room</h3>
-
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-300">{roomId}</span>
-
-          <button
-            onClick={handleCopy}
-            className="border border-gray-600 text-blue-400 px-4 py-2 rounded hover:bg-gray-700 transition text-sm"
-          >
-            {copied ? "Copied!" : "Copy Joining Info"}
-          </button>
-        </div>
-      </div>
+      <MeetingHeader
+        roomId={roomId}
+        participantCount={1 + peers.length}
+      />
 
       {/* VIDEO GRID */}
-      <div className="flex-1 p-6 grid gap-6 overflow-y-auto 
-                      grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-        {localStream && (
-          <div className="aspect-video min-h-[200px]">
-            <VideoPlayer
-              stream={localStream}
-              muted={true}
-              label="You"
-            />
-          </div>
-        )}
+      <VideoGrid localStream={localStream} localUsername={localUsername} peers={peers} />
 
-        {peers.map((peerObj) => (
-          <div
-            key={peerObj.socketId}
-            className="aspect-video min-h-[200px]"
-          >
-            <VideoPlayer
-              stream={peerObj.stream}
-              label="Participant"
-            />
-          </div>
-        ))}
-      </div>
-
-      {/* FOOTER CONTROLS */}
-      <div className="px-6 py-5 flex justify-center gap-6 border-t border-gray-700 bg-[#202124]">
-        <button
-          onClick={toggleMic}
-          className={`px-6 py-3 rounded-full font-semibold transition 
-            ${isMicOn
-              ? "bg-gray-700 hover:bg-gray-600"
-              : "bg-red-500 hover:bg-red-600"}`}
-        >
-          {isMicOn ? "🎙️ Mic On" : "Mic Off"}
-        </button>
-
-        <button
-          onClick={toggleCam}
-          className={`px-6 py-3 rounded-full font-semibold transition 
-            ${isCamOn
-              ? "bg-gray-700 hover:bg-gray-600"
-              : "bg-red-500 hover:bg-red-600"}`}
-        >
-          {isCamOn ? "📹 Cam On" : "Cam Off"}
-        </button>
-
-        <button
-          onClick={leaveCall}
-          className="px-8 py-3 rounded-full font-semibold bg-red-500 hover:bg-red-600 transition min-w-[120px]"
-        >
-          📞 End Call
-        </button>
-      </div>
+      {/* CONTROL BAR */}
+      <ControlBar
+        isMicOn={isMicOn}
+        isCamOn={isCamOn}
+        copied={copied}
+        onToggleMic={toggleMic}
+        onToggleCam={toggleCam}
+        onCopy={handleCopy}
+        onLeave={leaveCall}
+      />
     </div>
   );
 }

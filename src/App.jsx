@@ -1,17 +1,18 @@
 // App.jsx
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Navbar from "./components/Navbar";
+import { Navbar } from "./components/layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Meeting from "./pages/Meeting";
+import EditProfile from "./pages/EditProfile";
 
 function App() {
   return (
     <BrowserRouter>
-      <div className="min-h-screen flex flex-col">
+      <div className="min-h-screen flex flex-col bg-slate-950">
         <Navbar />
 
         <div className="flex-1 overflow-hidden">
@@ -24,6 +25,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Meeting />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/profile"
+              element={
+                <ProtectedRoute>
+                  <EditProfile />
                 </ProtectedRoute>
               }
             />

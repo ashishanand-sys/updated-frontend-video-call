@@ -1,37 +1,47 @@
-// components/Navbar.jsx
 import { Link, useNavigate } from "react-router-dom";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 
 export default function Navbar() {
   const [user, setUser] = useState(null);
   const navigate = useNavigate();
 
-  const loadUser = useCallback(() => {
-    const userData = localStorage.getItem("user");
-    const token = localStorage.getItem("token");
+  useEffect(() => {
+    const checkUser = async () => {
+      try {
+        const res = await fetch(
+          `${import.meta.env.VITE_API_URL}/api/auth/profile`,
+          {
+            credentials: "include", 
+          }
+        );
 
-    if (userData && token) {
-      setUser(JSON.parse(userData));
-    } else {
-      setUser(null);
-    }
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data.user);
+        } else {
+          setUser(null);
+        }
+      } catch {
+        setUser(null);
+      }
+    };
+
+    checkUser();
   }, []);
 
-  useEffect(() => {
-    const timer = setTimeout(() => loadUser(), 0);
-    window.addEventListener("storage", loadUser);
-    window.addEventListener("user-login", loadUser);
+  const handleLogout = async () => {
+    try {
+      await fetch(
+        `${import.meta.env.VITE_API_URL}/api/auth/logout`,
+        {
+          method: "POST",
+          credentials: "include",
+        }
+      );
+    } catch (err) {
+      console.error(err);
+    }
 
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener("storage", loadUser);
-      window.removeEventListener("user-login", loadUser);
-    };
-  }, [loadUser]);
-
-  const handleLogout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
     setUser(null);
     navigate("/login");
   };

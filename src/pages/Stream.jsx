@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import { useParams } from "react-router-dom";
 
-const socket = io(import.meta.env.VITE_API_URL);
+const socket = io(import.meta.env.VITE_API_URL, {
+  withCredentials: true,
+});
 
 export default function Stream() {
   const { streamId } = useParams();
